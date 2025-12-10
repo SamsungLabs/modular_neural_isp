@@ -1,0 +1,14 @@
+{
+    "latent_dim": 24,
+    "map_size": [
+        100,
+        100
+    ],
+    "eca": true,
+    "gamma": true,
+    "scale_dct": false,
+    "lut": true,
+    "lut_size": 128,
+    "lut_channels": 3,
+    "quality": 50
+}
