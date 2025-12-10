@@ -1,0 +1,36 @@
+{
+    "epochs": 400,
+    "lr": 0.001,
+    "weight_decay": 1e-09,
+    "device": null,
+    "capture_data": [
+        "iso",
+        "shutter_speed"
+    ],
+    "output_path": "./models",
+    "exp_name": "awb_iso_shutter_speed_pref",
+    "user_preference": true,
+    "hist_bins": 48,
+    "batch_size": 8,
+    "optimizer": "adam",
+    "target_size": [
+        256,
+        384
+    ],
+    "norm_values": {
+        "capture-data-min": [
+            2.4849066734313965,
+            -7.632400989532471
+        ],
+        "capture-data-max": [
+            8.070905685424805,
+            -2.3025851249694824
+        ]
+    },
+    "hist_boundaries": [
+        0.3689308762550354,
+        0.2642074227333069,
+        1.0882045030593872,
+        0.8738162666559219
+    ]
+}
