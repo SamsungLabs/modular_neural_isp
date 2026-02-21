@@ -193,7 +193,7 @@ class Decoder(nn.Module):
         nn.ReflectionPad2d(1),
         nn.Conv2d(latent_channels // 2, latent_channels, 3, padding=0),
         nn.GELU(),
-        nn.AdaptiveAvgPool2d((8, 8))
+        nn.Upsample(size=(8, 8), mode='bilinear', align_corners=False)
       )
 
       self._scale_dct_output = nn.Conv2d(latent_channels, 3, 1)
@@ -207,7 +207,7 @@ class Decoder(nn.Module):
         nn.Conv2d(latent_channels, latent_channels // 2, kernel_size=3, stride=2, padding=1),
         nn.BatchNorm2d(latent_channels // 2),
         nn.GELU(),
-        nn.AdaptiveAvgPool2d((2, 2)),
+        nn.Upsample(size=(2, 2), mode='bilinear', align_corners=False)
       )
       self._lut_head = nn.Sequential(
         nn.Flatten(),

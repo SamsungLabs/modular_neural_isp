@@ -189,7 +189,12 @@ if __name__ == '__main__':
   assert args.device in DEVICES, 'Invalid device.'
 
   if args.device == 'gpu':
-    device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
+    if torch.cuda.is_available():
+      device = torch.device('cuda')
+    elif hasattr(torch.backends, 'mps') and torch.backends.mps.is_available():
+      device = torch.device('mps')
+    else:
+      device = torch.device('cpu')
   else:
     device = torch.device('cpu')
 
@@ -453,4 +458,7 @@ if __name__ == '__main__':
   else:
     print('Saving...')
     imwrite(outputs['srgb'], os.path.join(dir_path, f'{basename}-output.jpg'), 'JPEG',
+
             quality=DEFAULT_SRGB_JPEG_QUALITY)
+
+

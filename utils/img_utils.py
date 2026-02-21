@@ -31,6 +31,9 @@ from skimage import color
 from utils.constants import *
 from sklearn.linear_model import LinearRegression
 import exiftool
+from utils.exif_utils import parse_exif
+import exifread
+from fractions import Fraction
 import itertools
 from sklearn.linear_model import Ridge
 from concurrent.futures import ThreadPoolExecutor
@@ -172,7 +175,7 @@ def extract_image_from_dng(file: str) -> np.ndarray:
 
 
 def demosaice(img: np.ndarray, cfa_pattern: str, tile_mode: Optional[bool] = False,
-              tile_size: Optional[int] = 512, overlap: Optional[int] = 16,
+              tile_size: Optional[int] = 256, overlap: Optional[int] = 16,
               num_workers: Optional[int] = 8) -> np.ndarray:
   """Performs image demosaicing to input image.
 
@@ -308,18 +311,18 @@ def raw_to_lsrgb(img: Union[np.ndarray, torch.Tensor],
 
     img_reshaped = img.reshape(-1, 3)
     wb_gain = illum_color[1] / illum_color
-    img_wb = img_reshaped @ np.diag(wb_gain)
-    img_ccm = img_wb @ ccm.T
-    img_out = img_ccm.reshape(img.shape)
+    color_matrix = ccm @ np.diag(wb_gain)
+    img_out = (img_reshaped @ color_matrix.T).reshape(img.shape)
     return np.clip(img_out, 0.0, 1.0)
+
 
   elif isinstance(img, torch.Tensor) and isinstance(illum_color, torch.Tensor) and isinstance(ccm, torch.Tensor):
     b, c, h, w = img.shape
-    wb_gains = illum_color[:, 1].unsqueeze(-1) / (illum_color + EPS)
-    img_wb = img * wb_gains.view(b, 3, 1, 1)
-    img_wb = img_wb.permute(0, 2, 3, 1).reshape(b, -1, 3)
-    img_ccm = torch.bmm(img_wb, ccm.transpose(1, 2))
-    img_out = img_ccm.view(b, h, w, 3).permute(0, 3, 1, 2)
+    wb_gain = illum_color[:, 1].unsqueeze(-1) / (illum_color + EPS)
+    color_matrix = ccm * wb_gain.unsqueeze(1)
+    img_flat = img.permute(0, 2, 3, 1).reshape(b, -1, 3)
+    img_out = torch.bmm(img_flat, color_matrix.transpose(1, 2))
+    img_out = img_out.view(b, h, w, 3).permute(0, 3, 1, 2)
     return torch.clamp(img_out, 0.0, 1.0)
 
   else:
@@ -387,6 +390,9 @@ def imread(img_file: str, single_channel: Optional[bool] = False, normalize: Opt
     additional_output = dtype
   else:
     additional_output = None
+  if img.ndim > 2 and img.shape[2] > 3:
+    # Handling PNG images with alpha channels
+    img = img[:, :, 1:]
   return (img, additional_output) if additional_output is not None else img
 
 def img_to_tensor(img):
@@ -613,7 +619,10 @@ def apply_mapping_func(image, m, p_kernel: Optional[bool]=True):
   return result
 
 def extract_additional_dng_metadata(dng_file: str) -> Dict[str, Any]:
-  """Extracts additional DNG metadata using ExifTool."""
+  """Extracts additional DNG metadata."""
+
+  def warn(msg):
+    print(f'[WARN] {msg}: {dng_file}')
 
   def convert_to_list(value: str) -> Any:
     """Helper function to convert a string to a np.array, or return None if invalid."""
@@ -624,38 +633,205 @@ def extract_additional_dng_metadata(dng_file: str) -> Dict[str, Any]:
     except ValueError:
         return None
 
+  def _get_tag_from_ifd(ifd, tag_id):
+    try:
+      if ifd and tag_id in ifd.tags:
+        return ifd.tags[tag_id].values
+    except Exception:
+      pass
+    return None
+
+  def _bytes_to_str(x):
+    try:
+      if isinstance(x, (list, tuple)):
+        chars = []
+        for v in x:
+          if isinstance(v, bytes):
+            chars.append(v.decode('ascii', errors='ignore'))
+          elif isinstance(v, int):
+            chars.append(chr(v))
+        return ''.join(chars).strip('\x00').strip()
+      if isinstance(x, bytes):
+        return x.decode('ascii', errors='ignore').strip("\x00").strip()
+      if isinstance(x, str):
+        return x
+    except Exception:
+      pass
+    return None
+
+  def _to_float_scalar(x):
+    try:
+      if isinstance(x, (list, tuple)) and len(x) == 1:
+        x = x[0]
+      if isinstance(x, Fraction):
+        return float(x)
+      if isinstance(x, (int, float, np.number)):
+        return float(x)
+    except Exception:
+      pass
+    return None
+
+  def _to_int_scalar(x):
+    try:
+      if isinstance(x, (list, tuple)) and len(x) == 1:
+        x = x[0]
+      if isinstance(x, (int, np.integer)):
+        return int(x)
+    except Exception:
+      pass
+    return None
+
+  def _to_array(x):
+    try:
+      if x is None:
+        return None
+      return np.array(x, dtype=np.float32)
+    except Exception:
+      return None
+
+  def _to_3x3(x):
+    try:
+      if x is None:
+        return None
+      x = np.asarray(x, dtype=np.float32).reshape(-1)
+      if x.size == 9:
+        return x.reshape(3, 3)
+      if x.size == 18:
+        return x.reshape(3, 6)[:, :3]
+    except Exception:
+      pass
+    return None
+
+  def _exifread_float(tags, name):
+    try:
+      tag = tags.get(name)
+      if tag is None:
+        return None
+      val = tag.values
+      if isinstance(val, list) and len(val) == 1:
+        val = val[0]
+      if isinstance(val, Fraction):
+        return float(val)
+      if isinstance(val, (int, float)):
+        return float(val)
+    except Exception:
+      pass
+    return None
+
   try:
     with exiftool.ExifTool(EXIFTOOL_PATH) as et:
       metadata_list = et.execute_json(dng_file)
-  except Exception as e:
-    print(f'Failed to extract metadata from {dng_file}: {e}')
-    return {}
 
-  metadata = metadata_list[0] if metadata_list else {}
-  data = {
-    'make': metadata.get('EXIF:Make', None),
-    'model': metadata.get('EXIF:Model', None),
-    'exposure_time': metadata.get('EXIF:ExposureTime', None),
-    'f_number': metadata.get('EXIF:FNumber', None),
-    'iso': metadata.get('EXIF:ISO', None),
-    'focal_length': metadata.get('EXIF:FocalLength', None),
-    'color_matrix1': convert_to_list(metadata.get('EXIF:ColorMatrix1', None)),
-    'color_matrix2': convert_to_list(metadata.get('EXIF:ColorMatrix2', None)),
-    'camera_calibration1': convert_to_list(metadata.get('EXIF:CameraCalibration1', None)),
-    'camera_calibration2': convert_to_list(metadata.get('EXIF:CameraCalibration2', None)),
-    'as_shot_neutral': convert_to_list(metadata.get('EXIF:AsShotNeutral', None)),
-    'calibration_illuminant1': metadata.get('EXIF:CalibrationIlluminant1', None),
-    'calibration_illuminant2': metadata.get('EXIF:CalibrationIlluminant2', None),
-    'forward_matrix1': convert_to_list(metadata.get('EXIF:ForwardMatrix1', None)),
-    'forward_matrix2': convert_to_list(metadata.get('EXIF:ForwardMatrix2', None)),
-    'noise_profile': convert_to_list(metadata.get('EXIF:NoiseProfile', None)),
-    'aperture': metadata.get('Composite:Aperture', None),
-    'shutter_speed': metadata.get('Composite:ShutterSpeed', None),
-    'fov': metadata.get('Composite:FOV', None),
-    'width': metadata.get('EXIF:ImageWidth', None),
-    'height': metadata.get('EXIF:ImageHeight', None),
-  }
-  return data
+    metadata = metadata_list[0] if metadata_list else {}
+    data = {
+      'make': metadata.get('EXIF:Make', None),
+      'model': metadata.get('EXIF:Model', None),
+      'exposure_time': metadata.get('EXIF:ExposureTime', None),
+      'f_number': metadata.get('EXIF:FNumber', None),
+      'iso': metadata.get('EXIF:ISO', None),
+      'focal_length': metadata.get('EXIF:FocalLength', None),
+      'color_matrix1': convert_to_list(metadata.get('EXIF:ColorMatrix1', None)),
+      'color_matrix2': convert_to_list(metadata.get('EXIF:ColorMatrix2', None)),
+      'camera_calibration1': convert_to_list(metadata.get('EXIF:CameraCalibration1', None)),
+      'camera_calibration2': convert_to_list(metadata.get('EXIF:CameraCalibration2', None)),
+      'as_shot_neutral': convert_to_list(metadata.get('EXIF:AsShotNeutral', None)),
+      'calibration_illuminant1': metadata.get('EXIF:CalibrationIlluminant1', None),
+      'calibration_illuminant2': metadata.get('EXIF:CalibrationIlluminant2', None),
+      'forward_matrix1': convert_to_list(metadata.get('EXIF:ForwardMatrix1', None)),
+      'forward_matrix2': convert_to_list(metadata.get('EXIF:ForwardMatrix2', None)),
+      'noise_profile': convert_to_list(metadata.get('EXIF:NoiseProfile', None)),
+      'aperture': metadata.get('Composite:Aperture', None),
+      'shutter_speed': metadata.get('Composite:ShutterSpeed', None),
+      'fov': metadata.get('Composite:FOV', None),
+      'width': metadata.get('EXIF:ImageWidth', None),
+      'height': metadata.get('EXIF:ImageHeight', None),
+    }
+    return data
+
+  except Exception as e:
+    warn(f'ExifTool failed for {dng_file}: {e}. Resolving metadata extraction...\n')
+    try:
+      ifds = parse_exif(dng_file, verbose=False)
+    except Exception as e:
+      warn(f'Failed to parse EXIF ({e})')
+      return {}
+
+    ifd0 = None
+    exif_ifd = None
+    for ifd in ifds.values():
+      if 0x010F in ifd.tags or 0x0110 in ifd.tags:
+        ifd0 = ifd
+        break
+    exif_tags = {0x829A, 0x829D, 0x8827, 0x920A}
+    for ifd in ifds.values():
+      if any(t in ifd.tags for t in exif_tags):
+        exif_ifd = ifd
+        break
+    try:
+      cm1 = _to_3x3(_get_tag_from_ifd(ifd0, 0xC621))
+      fm1 = _to_3x3(_get_tag_from_ifd(ifd0, 0xC714))
+      asn = _to_array(_get_tag_from_ifd(ifd0, 0xC628))
+
+      if cm1 is None or fm1 is None or asn is None:
+        raise ValueError('Missing required DNG color metadata')
+    except Exception as e:
+      warn(str(e))
+      return {}
+    make = _bytes_to_str(_get_tag_from_ifd(ifd0, 0x010F))
+    model = _bytes_to_str(_get_tag_from_ifd(ifd0, 0x0110))
+
+    exposure_time = _to_float_scalar(_get_tag_from_ifd(exif_ifd, 0x829A))
+    f_number = _to_float_scalar(_get_tag_from_ifd(exif_ifd, 0x829D))
+    iso = _to_int_scalar(_get_tag_from_ifd(exif_ifd, 0x8827))
+    focal_length = _to_float_scalar(_get_tag_from_ifd(exif_ifd, 0x920A))
+
+    width = _to_int_scalar(_get_tag_from_ifd(ifd0, 0xA002))
+    height = _to_int_scalar(_get_tag_from_ifd(ifd0, 0xA003))
+
+    calib_illum_1 = _to_int_scalar(_get_tag_from_ifd(ifd0, 0xC65A))
+    calib_illum_2 = _to_int_scalar(_get_tag_from_ifd(ifd0, 0xC65B))
+    try:
+      if exposure_time is None or f_number is None or focal_length is None:
+        with open(dng_file, 'rb') as f:
+          tags = exifread.process_file(f, details=False)
+
+        if exposure_time is None:
+          exposure_time = _exifread_float(tags, 'EXIF ExposureTime')
+
+        if f_number is None:
+          f_number = _exifread_float(tags, 'EXIF FNumber')
+
+        if focal_length is None:
+          focal_length = _exifread_float(tags, 'EXIF FocalLength')
+
+    except Exception as e:
+      warn(f'Exifread fallback failed ({e})')
+    aperture = f_number
+    shutter_speed = exposure_time
+
+    return {
+      'make': make,
+      'model': model,
+      'exposure_time': exposure_time,
+      'f_number': f_number,
+      'iso': iso,
+      'focal_length': focal_length,
+      'width': width,
+      'height': height,
+      'color_matrix1': cm1.flatten(),
+      'color_matrix2': _to_array(_get_tag_from_ifd(ifd0, 0xC622)),
+      'forward_matrix1': fm1.flatten(),
+      'forward_matrix2': _to_array(_get_tag_from_ifd(ifd0, 0xC715)),
+      'camera_calibration1': _to_array(_get_tag_from_ifd(ifd0, 0xC623)),
+      'camera_calibration2': _to_array(_get_tag_from_ifd(ifd0, 0xC624)),
+      'as_shot_neutral': asn,
+      'calibration_illuminant1': calib_illum_1,
+      'calibration_illuminant2': calib_illum_2,
+      'aperture': aperture,
+      'shutter_speed': shutter_speed,
+      'fov': None,
+      'noise_profile': None,
+    }
 
 def imresize(img: np.ndarray, height: int, width: int, interpolation_method: Optional[str] = 'linear') -> np.ndarray:
   """Resizes an image to a target size with a specified interpolation method.
@@ -833,3 +1009,7 @@ def extract_non_overlapping_patches(img: np.ndarray, gt_img: Optional[np.ndarray
       gt_patches.append(resized_gt)
     patches['gt'] = gt_patches
   return patches
+
+
+
+

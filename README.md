@@ -2,6 +2,22 @@
 
 #### **[Mahmoud Afifi](https://www.mafifi.info/), [Zhongling Wang](https://ece.uwaterloo.ca/~z2228wan/), [Ran Zhang](https://www.linkedin.com/in/ran-zhang-48b85021/), and [Michael S. Brown](http://www.cse.yorku.ca/~mbrown/)**
 
+---
+
+## 🆕 News
+
+- **Executable binaries are now available** for the interactive photo-editing tool.  
+  You can download pre-built standalone executables from [here](gui).
+
+## 📦 Latest Release
+**2025-12-30 — v0.1.5 (Beta)**  
+Added support for Apple Silicon (MPS).
+
+➡️ See full release history in [CHANGELOG.md](CHANGELOG.md)
+
+  
+---
+
 <p align="center">
   <a href="https://www.youtube.com/watch?v=ByhQjQSjxVM" target="_blank">
     <img src="https://img.youtube.com/vi/ByhQjQSjxVM/maxresdefault.jpg" width="100%" />
@@ -18,13 +34,13 @@ On top of this modular neural ISP, we developed a user-interactive photo-editing
 
 🔗 **[Paper](https://arxiv.org/abs/2512.08564)**
 
-
-
 ---
 
 ## 🛠️ Installation
 
-You can set up the environment using Conda or venv:
+To run the standalone executable without a Python setup, see [`here`](gui).
+
+Otherwise, you can set up the environment using Conda or venv:
 
 ### Option 1: Using Conda (recommended)
 
@@ -55,11 +71,12 @@ pip install torch torchvision torchaudio --index-url https://download.pytorch.or
 pip install -r requirements.txt
 ```
 
-### 📸 ExifTool (Required for Raw Metadata)
+### 📸 ExifTool (Optional but Recommended)
 
-Some components of this project require **ExifTool** to read raw metadata.
+ExifTool is used for robust raw/DNG metadata extraction and provides the best compatibility across cameras and file variants.  
+If available, it will be used automatically. If not, the code falls back to a Python metadata extractor.
 
-#### 1. Install ExifTool
+#### 1. Install ExifTool (Optional)
 
 **Linux (Ubuntu/Debian):**
 ```bash
@@ -83,7 +100,7 @@ brew install exiftool
 4. Place it somewhere permanent, e.g. `C:\exiftool\exiftool.exe`.
 
 
-#### 2. Configure ExifTool Path
+#### 2. Configure ExifTool Path (Optional)
 
 If ExifTool is not detected automatically, update `EXIFTOOL_PATH` in  [`utils/constants.py`](utils/constants.py):
 
@@ -104,10 +121,15 @@ else:  # Linux
 For console-based rendering of a DNG raw file taken by any camera (or any sRGB image produced by third-party software) refer to the [`main`](main) directory.  
 To launch the interactive photo-editing tool, see the [`gui`](gui) directory.
 
+> **Note:** Inference supports **CUDA, CPU, and Apple MPS**. On MPS, unsupported operators are automatically executed on CPU.
+
+
 ---
 
 ## ⚙️ Training
 To retrain our framework, begin by training the denoiser network (see [`denoising`](denoising) for instructions). Then train the photofinishing module (refer to [`photofinishing`](photofinishing)). Finally, train the detail-enhancement network (see [`enhancement`](enhancement)).
+
+> **Note:** Training is currently supported on **CUDA and CPU only**. Training on Apple MPS is **not supported**.
 
 ---
 

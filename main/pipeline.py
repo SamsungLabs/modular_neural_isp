@@ -50,6 +50,10 @@ from utils.vect_utils import min_max_normalization
 
 class PipeLine(nn.Module):
   """Modular neural pipeline."""
+
+  _SOBEL_X = torch.tensor([[-1, 0, 1]], dtype=torch.float32).view(1, 1, 1, 3)
+  _SOBEL_Y = torch.tensor([[-1], [0], [1]], dtype=torch.float32).view(1, 1, 3, 1)
+  
   def __init__(self, denoising_model_path: Optional[str] = None,
                denoising_model_config_path: Optional[str]=None,
                generic_denoising_model_path: Optional[str] = None,
@@ -520,11 +524,14 @@ class PipeLine(nn.Module):
     if shadow_amount:
       assert -1 <= shadow_amount <= 1.0
 
-    if target_cct:
-      assert CCT_MIN <= target_cct <= CCT_MAX
+    apple_pro_raw = self._is_apple_pro_raw(img_metadata)
+    # Apple ProRAW produces unreliable CCT/Tint values; skip validation
+    if not apple_pro_raw:
+      if target_cct:
+        assert CCT_MIN <= target_cct <= CCT_MAX
 
-    if target_tint:
-      assert TINT_MIN <= target_tint <= TINT_MAX
+      if target_tint:
+        assert TINT_MIN <= target_tint <= TINT_MAX
 
     if illum is None:
       if use_cc_awb or not self._is_s24:
@@ -571,14 +578,15 @@ class PipeLine(nn.Module):
 
         illum = self._cc_awb_model(img_stats['hist_stats'], inference=True)
       illum = illum.to(dtype=raw.dtype)
-      if awb_user_pref:
+      if awb_user_pref and not self._is_apple_pro_raw(img_metadata):
         if 'color_matrix1' in img_metadata:
           with torch.no_grad():
             illum = self._to_tensor(map_illum(self._post_awb_model, self._to_np(illum), img_metadata)
                                     ).to(dtype=raw.dtype)
         else:
           print('Cannot apply AWB preference: missing required metadata.')
-
+      elif awb_user_pref:
+        illum = self._to_tensor(img_metadata['as_shot_neutral']).to(dtype=raw.dtype)
       if report_time:
         awb_time_end = time.perf_counter()
         awb_time = awb_time_end - awb_time_start
@@ -643,16 +651,16 @@ class PipeLine(nn.Module):
           illum_temp = illum
       target_cct, target_tint = cct_tint_from_raw_rgb(illum_temp, xyz2cam1, xyz2cam2, calib_illum_1, calib_illum_2)
       # Constrain CCT/tint values to prevent unnatural color outputs in failure cases
-      if awb_user_pref:
+      if awb_user_pref and not self._is_apple_pro_raw(img_metadata):
         cct_min, cct_max = 2500, 8000
       else:
         cct_min, cct_max = 1500, 9000
-      if target_cct < cct_min or target_cct > cct_max:
+      if target_cct < cct_min or target_cct > cct_max and not self._is_apple_pro_raw(img_metadata):
         target_cct = max(min(target_cct, cct_max), cct_min)
-      if abs(target_tint / TINT_SCALE) > 5 and awb_user_pref:
+      if abs(target_tint / TINT_SCALE) > 5 and awb_user_pref and not self._is_apple_pro_raw(img_metadata):
         target_tint = 5 * TINT_SCALE
       illum = raw_rgb_from_cct_tint(target_cct, target_tint, xyz2cam1, xyz2cam2, calib_illum_1, calib_illum_2)
-      illum = self._to_tensor(illum).to(dtype=raw.dtype, device=raw.device)
+      illum = self._to_tensor(illum.astype(np.float32)).to(dtype=raw.dtype, device=raw.device)
     else:
       target_cct, target_tint = None, None
 
@@ -1351,9 +1359,16 @@ class PipeLine(nn.Module):
     return self._photofinishing_model.get_cbcr_lut_size()
 
   @staticmethod
-  def is_s24_camera(metadata):
+  def is_s24_camera(metadata: Dict[str, Any]) -> bool:
+    """Checks if the input image is from S24 main camera."""
     return PipeLine._is_24_camera(metadata)
 
+  @staticmethod
+  def _is_apple_pro_raw(metadata: Dict[str, Any]) -> bool:
+    """Heuristic check for Apple ProRaw images."""
+    return (metadata.get('as_shot_neutral') is not None and
+            np.allclose(metadata.get('as_shot_neutral'), [1.0, 1.0, 1.0]))
+    
   @staticmethod
   def _is_24_camera(img_metadata: Dict[str, Any]) -> bool:
     """Checks if the input image is from S24 main camera."""
@@ -1382,6 +1397,7 @@ class PipeLine(nn.Module):
 
   def _to_tensor(self, x):
     """Converts numpy to tensor."""
+    x = x.astype(np.float32)
     if len(x.shape) == 3:
       return img_to_tensor(x).unsqueeze(0).to(device=self._device, dtype=torch.float32)
     else:
@@ -1512,6 +1528,13 @@ class PipeLine(nn.Module):
                   linearize: Optional[bool] = False) -> Dict[str, Any]:
     """Reads an sRGB JPEG, and if payload is appended after EOI, extract raw, metadata, and editing settings."""
     srgb_img = imread(path)
+    h, w = srgb_img.shape[:2]
+    max_dim = max(h, w)
+    if max_dim < MIN_DIM:
+      scale = MIN_DIM / max_dim
+      new_w = int(round(w * scale))
+      new_h = int(round(h * scale))
+      srgb_img = imresize(srgb_img, height=new_h, width=new_w)
     with open(path, 'rb') as f:
       data = f.read()
 
@@ -1747,26 +1770,18 @@ class PipeLine(nn.Module):
       radius: blur kernel size
       sigma: blur sigma
     """
-    # Base layer (smoothed image)
+    c = img.shape[1]
     base = PipeLine._gaussian_blur(img, kernel_size=radius, sigma=sigma)
-    detail = img - base  # high-frequency detail
-
-    # Sobel-like gradient kernels -- per channel
-    kx = torch.tensor([[[[-1, 0, 1]]]], dtype=img.dtype, device=img.device)
-    ky = torch.tensor([[[[-1], [0], [1]]]], dtype=img.dtype, device=img.device)
-    kx = kx.repeat(img.shape[1], 1, 1, 1)
-    ky = ky.repeat(img.shape[1], 1, 1, 1)
-
-    grad_x = F.conv2d(img, kx, padding=(0, 1), groups=img.shape[1])
-    grad_y = F.conv2d(img, ky, padding=(1, 0), groups=img.shape[1])
-
-    # Edge-aware mask
-    edge_mag = torch.sqrt(grad_x ** 2 + grad_y ** 2).mean(1, keepdim=True)
-    edge_mask = (edge_mag / (edge_mag.max() + 1e-6)).clamp(0, 1)
-
-    # Weighted sharpening
-    sharpened = img + amount * detail * edge_mask
-    return sharpened.clamp(0, 1)
+    detail = img - base
+    kx = PipeLine._SOBEL_X.to(img.device, img.dtype).repeat(c, 1, 1, 1)
+    ky = PipeLine._SOBEL_Y.to(img.device, img.dtype).repeat(c, 1, 1, 1)
+    grad_x = F.conv2d(img, kx, padding=(0, 1), groups=c)
+    grad_y = F.conv2d(img, ky, padding=(1, 0), groups=c)
+    edge_mag = torch.sqrt(grad_x.mul(grad_x).add_(grad_y.mul(grad_y))).mean(1, keepdim=True)
+    edge_mask = edge_mag / (edge_mag.amax(dim=(2, 3), keepdim=True) + EPS)
+    edge_mask.clamp_(0, 1)
+    out = img + amount * detail * edge_mask
+    return out.clamp_(0, 1)
 
 
   @staticmethod
@@ -1795,7 +1810,7 @@ class PipeLine(nn.Module):
     b, _, h, w = x.shape
     device, dtype = x.device, x.dtype
 
-    x_stats = F.interpolate(x, size=(stats_size, stats_size), mode="area")
+    x_stats = F.interpolate(x, size=(stats_size, stats_size), mode="bilinear")
 
     y = PipeLine._rgb_to_luma(x_stats).clamp(EPS, 1.0).view(b, -1)
 
@@ -1884,3 +1899,14 @@ class PipeLine(nn.Module):
       return {'hist_stats': self._to_tensor(hist_stats)}
     else:
       raise ValueError(f'Unsupported model: {model}.')
+
+
+
+
+
+
+
+
+
+
+

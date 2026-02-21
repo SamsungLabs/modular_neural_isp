@@ -137,7 +137,12 @@ if __name__ == '__main__':
   args = get_args()
   os.makedirs(args.result_dir, exist_ok=True)
   print(tabulate([(key, value) for key, value in vars(args).items()], headers=['Argument', 'Value'], tablefmt='grid'))
-  device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
+  if torch.cuda.is_available():
+    device = torch.device('cuda')
+  elif hasattr(torch.backends, 'mps') and torch.backends.mps.is_available():
+    device = torch.device('mps')
+  else:
+    device = torch.device('cpu')
 
   logging.info(f'Using device {device}')
   enhancement_model_path = (
@@ -165,4 +170,5 @@ if __name__ == '__main__':
        os.path.basename(args.photofinishing_model_path))[0] + '_' + os.path.splitext(
        os.path.basename(args.denoising_model_path))[0] + postfix +'.txt'), 'w') as f:
     f.write(results)
+
 

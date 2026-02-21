@@ -17,7 +17,7 @@ This file contains all constant values used in this project.
 """
 
 
-# To install Exiftool:
+# To install Exiftool (optional):
 # 1) pip install PyExifTool
 # 2) sudo apt install libimage-exiftool-perl (for Debian/Ubuntu) Or
 #    sudo pacman -S perl-image-exiftool (for Arch Linux) Or
@@ -37,9 +37,13 @@ elif os_name == 'Darwin':
 else:
   EXIFTOOL_PATH = '/usr/bin/exiftool'  # Update accordingly
 
+VERSION = 'v0.1.5-beta'
+
 EPS = 0.00000001
 
 DEVICES = ['cpu', 'gpu']
+
+MIN_DIM = 2000
 
 LOG_MAX_LENGTH = 400
 
@@ -262,7 +266,7 @@ METADATA = {
 
 
 ABOUT_MESSAGE = (
-    'This is the user interface for the modular neural ISP\n'
+    f'This is the user interface for the modular neural ISP ({VERSION})\n'
     'presented in the paper:\n\n'
     'Modular Neural Image Signal Processing.\n\n'
     'Developed by:\n'
@@ -283,3 +287,8 @@ ABOUT_MESSAGE = (
     '• Raghav Goyal – denoiser experiments\n\n'
     'Inquiries: Mahmoud Afifi (m.3afifi@gmail.com)'
 )
+
+
+
+
+
