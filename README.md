@@ -1,11 +1,10 @@
-# Modular Neural Image Signal Processing (SIGGRAPH Asia 2026)
+# Modular Neural Image Signal Processing
 
 #### **[Mahmoud Afifi](https://www.mafifi.info/), [Zhongling Wang](https://ece.uwaterloo.ca/~z2228wan/), [Ran Zhang](https://www.linkedin.com/in/ran-zhang-48b85021/), and [Michael S. Brown](http://www.cse.yorku.ca/~mbrown/)**
 
 ---
 
 ## 🆕 News
-- Paper accepted at SIGGRAPH Asia 2026.
 
 - **Executable binaries are now available** for the interactive photo-editing tool.  
   You can download pre-built standalone executables from [here](gui).
@@ -143,11 +142,11 @@ To benchmark other methods using the same evaluation metrics used in our [paper]
 ## 📄 Citation
 If you use this code in your research, please cite our paper:
 ```
-@inproceedings{afifi2026modular,
+@article{afifi2025modular,
   title={Modular Neural Image Signal Processing},
   author={Afifi, Mahmoud and Wang, Zhongling and Zhang, Ran and Brown, Michael S},
-  booktitle = {SIGGRAPH Asia 2026 Conference Papers},
-  year={2026}
+  journal={arXiv preprint arXiv:2512.08564},
+  year={2025}
 }
 
 ```
